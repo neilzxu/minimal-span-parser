@@ -6,6 +6,7 @@ import tempfile
 
 import trees
 
+
 class FScore(object):
     def __init__(self, recall, precision, fscore):
         self.recall = recall
@@ -15,6 +16,7 @@ class FScore(object):
     def __str__(self):
         return "(Recall={:.2f}, Precision={:.2f}, FScore={:.2f})".format(
             self.recall, self.precision, self.fscore)
+
 
 def evalb(evalb_dir, gold_trees, predicted_trees):
     assert os.path.exists(evalb_dir)
@@ -30,9 +32,9 @@ def evalb(evalb_dir, gold_trees, predicted_trees):
         gold_leaves = list(gold_tree.leaves())
         predicted_leaves = list(predicted_tree.leaves())
         assert len(gold_leaves) == len(predicted_leaves)
-        assert all(
-            gold_leaf.word == predicted_leaf.word
-            for gold_leaf, predicted_leaf in zip(gold_leaves, predicted_leaves))
+        assert all(gold_leaf.word == predicted_leaf.word
+                   for gold_leaf, predicted_leaf in zip(
+                       gold_leaves, predicted_leaves))
 
     temp_dir = tempfile.TemporaryDirectory(prefix="evalb-")
     gold_path = os.path.join(temp_dir.name, "gold.txt")
@@ -70,10 +72,8 @@ def evalb(evalb_dir, gold_trees, predicted_trees):
                 fscore.fscore = float(match.group(1))
                 break
 
-    success = (
-        not math.isnan(fscore.fscore) or
-        fscore.recall == 0.0 or
-        fscore.precision == 0.0)
+    success = (not math.isnan(fscore.fscore) or fscore.recall == 0.0
+               or fscore.precision == 0.0)
 
     if success:
         temp_dir.cleanup()

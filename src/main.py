@@ -1,7 +1,11 @@
 import argparse
 import itertools
+import logging
+import os
 import os.path
+import sys
 import time
+import yaml
 
 import dynet as dy
 import numpy as np
@@ -10,6 +14,12 @@ import evaluate
 import parse
 import trees
 import vocabulary
+
+LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
+logger = logging.getLogger('minimal-span-parser')
+logger.setLevel(LOGLEVEL)
+logger.addHandler(logging.StreamHandler(sys.stdout))
+
 
 def format_elapsed(start_time):
     elapsed_time = int(time.time() - start_time)
@@ -21,23 +31,30 @@ def format_elapsed(start_time):
         elapsed_string = "{}d{}".format(days, elapsed_string)
     return elapsed_string
 
+
 def run_train(args):
+    logger.addHandler(logging.FileHandler(f"{args.model_path_base}.log"))
+    logger.info(args)
     if args.numpy_seed is not None:
-        print("Setting numpy random seed to {}...".format(args.numpy_seed))
+        logger.info("Setting numpy random seed to {}...".format(
+            args.numpy_seed))
         np.random.seed(args.numpy_seed)
+    load_trees = trees.load_trees if args.tree_type == 'treebank' else trees.load_itg_trees
 
-    print("Loading training trees from {}...".format(args.train_path))
-    train_treebank = trees.load_trees(args.train_path)
-    print("Loaded {:,} training examples.".format(len(train_treebank)))
+    logger.info("Loading training trees from {}...".format(args.train_path))
+    train_treebank = load_trees(args.train_path)
+    logger.info("Loaded {:,} training examples.".format(len(train_treebank)))
 
-    print("Loading development trees from {}...".format(args.dev_path))
-    dev_treebank = trees.load_trees(args.dev_path)
-    print("Loaded {:,} development examples.".format(len(dev_treebank)))
+    logger.info("Loading development trees from {}...".format(args.dev_path))
+    dev_treebank = load_trees(args.dev_path)
+    logger.info("Loaded {:,} development examples.".format(len(dev_treebank)))
 
-    print("Processing trees for training...")
-    train_parse = [tree.convert() for tree in train_treebank]
-
-    print("Constructing vocabularies...")
+    logger.info("Processing trees for training...")
+    if args.tree_type == 'treebank':
+        train_parse = [tree.convert() for tree in train_treebank]
+    else:
+        train_parse = train_treebank
+    logger.info("Constructing vocabularies...")
 
     tag_vocab = vocabulary.Vocabulary()
     tag_vocab.index(parse.START)
@@ -68,7 +85,7 @@ def run_train(args):
 
     def print_vocabulary(name, vocab):
         special = {parse.START, parse.STOP, parse.UNK}
-        print("{} ({:,}): {}".format(
+        logger.info("{} ({:,}): {}".format(
             name, vocab.size,
             sorted(value for value in vocab.values if value in special) +
             sorted(value for value in vocab.values if value not in special)))
@@ -78,7 +95,7 @@ def run_train(args):
         print_vocabulary("Word", word_vocab)
         print_vocabulary("Label", label_vocab)
 
-    print("Initializing model...")
+    logger.info("Initializing model...")
     model = dy.ParameterCollection()
     if args.parser_type == "top-down":
         parser = parse.TopDownParser(
@@ -130,30 +147,31 @@ def run_train(args):
             predicted, _ = parser.parse(sentence)
             dev_predicted.append(predicted.convert())
 
-        dev_fscore = evaluate.evalb(args.evalb_dir, dev_treebank, dev_predicted)
+        dev_fscore = evaluate.evalb(args.evalb_dir, dev_treebank,
+                                    dev_predicted)
 
-        print(
-            "dev-fscore {} "
-            "dev-elapsed {} "
-            "total-elapsed {}".format(
-                dev_fscore,
-                format_elapsed(dev_start_time),
-                format_elapsed(start_time),
-            )
-        )
+        logger.info("dev-fscore {} "
+                    "dev-elapsed {} "
+                    "total-elapsed {}".format(
+                        dev_fscore,
+                        format_elapsed(dev_start_time),
+                        format_elapsed(start_time),
+                    ))
 
         if dev_fscore.fscore > best_dev_fscore:
             if best_dev_model_path is not None:
                 for ext in [".data", ".meta"]:
                     path = best_dev_model_path + ext
                     if os.path.exists(path):
-                        print("Removing previous model file {}...".format(path))
+                        logger.info(
+                            "Removing previous model file {}...".format(path))
                         os.remove(path)
 
             best_dev_fscore = dev_fscore.fscore
             best_dev_model_path = "{}_dev={:.2f}".format(
                 args.model_path_base, dev_fscore.fscore)
-            print("Saving new best model to {}...".format(best_dev_model_path))
+            logger.info(
+                "Saving new best model to {}...".format(best_dev_model_path))
             dy.save(best_dev_model_path, [parser])
 
     for epoch in itertools.count(start=1):
@@ -181,37 +199,36 @@ def run_train(args):
             batch_loss.backward()
             trainer.update()
 
-            print(
-                "epoch {:,} "
-                "batch {:,}/{:,} "
-                "processed {:,} "
-                "batch-loss {:.4f} "
-                "epoch-elapsed {} "
-                "total-elapsed {}".format(
-                    epoch,
-                    start_index // args.batch_size + 1,
-                    int(np.ceil(len(train_parse) / args.batch_size)),
-                    total_processed,
-                    batch_loss_value,
-                    format_elapsed(epoch_start_time),
-                    format_elapsed(start_time),
-                )
-            )
+            logger.info("epoch {:,} "
+                        "batch {:,}/{:,} "
+                        "processed {:,} "
+                        "batch-loss {:.4f} "
+                        "epoch-elapsed {} "
+                        "total-elapsed {}".format(
+                            epoch,
+                            start_index // args.batch_size + 1,
+                            int(np.ceil(len(train_parse) / args.batch_size)),
+                            total_processed,
+                            batch_loss_value,
+                            format_elapsed(epoch_start_time),
+                            format_elapsed(start_time),
+                        ))
 
             if current_processed >= check_every:
                 current_processed -= check_every
                 check_dev()
 
-def run_test(args):
-    print("Loading test trees from {}...".format(args.test_path))
-    test_treebank = trees.load_trees(args.test_path)
-    print("Loaded {:,} test examples.".format(len(test_treebank)))
 
-    print("Loading model from {}...".format(args.model_path_base))
+def run_test(args):
+    logger.info("Loading test trees from {}...".format(args.test_path))
+    test_treebank = trees.load_trees(args.test_path)
+    logger.info("Loaded {:,} test examples.".format(len(test_treebank)))
+
+    logger.info("Loading model from {}...".format(args.model_path_base))
     model = dy.ParameterCollection()
     [parser] = dy.load(args.model_path_base, model)
 
-    print("Parsing test sentences...")
+    logger.info("Parsing test sentences...")
 
     start_time = time.time()
 
@@ -224,13 +241,12 @@ def run_test(args):
 
     test_fscore = evaluate.evalb(args.evalb_dir, test_treebank, test_predicted)
 
-    print(
-        "test-fscore {} "
-        "test-elapsed {}".format(
-            test_fscore,
-            format_elapsed(start_time),
-        )
-    )
+    logger.info("test-fscore {} "
+                "test-elapsed {}".format(
+                    test_fscore,
+                    format_elapsed(start_time),
+                ))
+
 
 def main():
     dynet_args = [
@@ -251,7 +267,8 @@ def main():
     for arg in dynet_args:
         subparser.add_argument(arg)
     subparser.add_argument("--numpy-seed", type=int)
-    subparser.add_argument("--parser-type", choices=["top-down", "chart"], required=True)
+    subparser.add_argument(
+        "--parser-type", choices=["top-down", "chart"], required=True)
     subparser.add_argument("--tag-embedding-dim", type=int, default=50)
     subparser.add_argument("--word-embedding-dim", type=int, default=100)
     subparser.add_argument("--lstm-layers", type=int, default=2)
@@ -268,6 +285,8 @@ def main():
     subparser.add_argument("--epochs", type=int)
     subparser.add_argument("--checks-per-epoch", type=int, default=4)
     subparser.add_argument("--print-vocabs", action="store_true")
+    subparser.add_argument(
+        "--tree-type", choices=["itg", "treebank"], required=True)
 
     subparser = subparsers.add_parser("test")
     subparser.set_defaults(callback=run_test)
@@ -279,6 +298,7 @@ def main():
 
     args = parser.parse_args()
     args.callback(args)
+
 
 if __name__ == "__main__":
     main()

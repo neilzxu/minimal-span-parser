@@ -1,7 +1,10 @@
 import collections.abc
+import re
+
 
 class TreebankNode(object):
     pass
+
 
 class InternalTreebankNode(TreebankNode):
     def __init__(self, label, children):
@@ -25,8 +28,8 @@ class InternalTreebankNode(TreebankNode):
         tree = self
         sublabels = [self.label]
 
-        while len(tree.children) == 1 and isinstance(
-                tree.children[0], InternalTreebankNode):
+        while len(tree.children) == 1 and isinstance(tree.children[0],
+                                                     InternalTreebankNode):
             tree = tree.children[0]
             sublabels.append(tree.label)
 
@@ -36,6 +39,7 @@ class InternalTreebankNode(TreebankNode):
             index = children[-1].right
 
         return InternalParseNode(tuple(sublabels), children)
+
 
 class LeafTreebankNode(TreebankNode):
     def __init__(self, tag, word):
@@ -54,8 +58,10 @@ class LeafTreebankNode(TreebankNode):
     def convert(self, index=0):
         return LeafParseNode(index, self.tag, self.word)
 
+
 class ParseNode(object):
     pass
+
 
 class InternalParseNode(ParseNode):
     def __init__(self, label, children):
@@ -68,9 +74,8 @@ class InternalParseNode(ParseNode):
         assert all(isinstance(child, ParseNode) for child in children)
         assert children
         assert len(children) > 1 or isinstance(children[0], LeafParseNode)
-        assert all(
-            left.right == right.left
-            for left, right in zip(children, children[1:]))
+        assert all(left.right == right.left
+                   for left, right in zip(children, children[1:]))
         self.children = tuple(children)
 
         self.left = children[0].left
@@ -104,10 +109,10 @@ class InternalParseNode(ParseNode):
 
     def oracle_splits(self, left, right):
         return [
-            child.left
-            for child in self.enclosing(left, right).children
+            child.left for child in self.enclosing(left, right).children
             if left < child.left < right
         ]
+
 
 class LeafParseNode(ParseNode):
     def __init__(self, index, tag, word):
@@ -127,6 +132,52 @@ class LeafParseNode(ParseNode):
 
     def convert(self):
         return LeafTreebankNode(self.tag, self.word)
+
+
+def load_itg_tree(sent, tree):
+    sent_tokens = sent.strip().split()
+    ctx_stack = []
+    ctx = []
+    cur_label = None
+    for token in tree:
+        if token == '(' and token != None:
+            ctx_stack.append((cur_label, ctx))
+            ctx = []
+        elif token == 'R' or token == 'S':
+            assert not ctx
+            cur_label = token
+        elif re.match(r'\[([0-9]+)-([0-9]+)\]', token):
+            res = re.match(r'\[([0-9]+)-([0-9]+)\]', token)
+            start, end = int(res.group(1)), int(res.group(2))
+            ctx.extend([
+                LeafParseNode(idx, 'S', sent_tokens[idx])
+                for idx in range(start, end + 1)
+            ])
+        elif re.match(r'[0-9]+', token):
+            ctx.append(
+                LeafParseNode(int(token), ('S'), sent_tokens[int(token)]))
+        elif token == ')':
+            tree = InternalParseNode((cur_label, ), ctx)
+            if ctx_stack:
+                cur_label, ctx = ctx_stack.pop()
+                ctx.append(tree)
+            else:
+                return tree
+        else:
+            raise ValueError(f"Invalid token {token} in ITG tree")
+    assert len(ctx) == 1
+    return ctx[0]
+
+
+def load_itg_trees(path):
+    with open(path, encoding='utf-8') as in_file:
+        res = []
+        for idx, sent, tree in zip(in_file, in_file, in_file):
+            if tree.strip() != 'None':
+                tokens = tree.replace("(", " ( ").replace(")", " ) ").split()
+                res.append(load_itg_tree(sent, tokens))
+    return res
+
 
 def load_trees(path, strip_top=True):
     with open(path) as infile:
