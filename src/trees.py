@@ -134,7 +134,7 @@ class LeafParseNode(ParseNode):
         return LeafTreebankNode(self.tag, self.word)
 
 
-def load_itg_tree(sent, tree):
+def load_itg_tree(sent, tree, idx):
     sent_tokens = sent.strip().split()
     ctx_stack = []
     ctx = []
@@ -149,6 +149,10 @@ def load_itg_tree(sent, tree):
         elif re.match(r'\[([0-9]+)-([0-9]+)\]', token):
             res = re.match(r'\[([0-9]+)-([0-9]+)\]', token)
             start, end = int(res.group(1)), int(res.group(2))
+            if start < 0 or end >= len(sent_tokens):
+                raise ValueError(
+                    f"ITG idx ({idx}) invalid. expected: {len(sent_tokens)}, actual: [{start}-{end}]"
+                )
             ctx.extend([
                 LeafParseNode(idx, 'S', sent_tokens[idx])
                 for idx in range(start, end + 1)
@@ -175,7 +179,7 @@ def load_itg_trees(path):
         for idx, sent, tree in zip(in_file, in_file, in_file):
             if tree.strip() != 'None':
                 tokens = tree.replace("(", " ( ").replace(")", " ) ").split()
-                res.append(load_itg_tree(sent, tokens))
+                res.append(load_itg_tree(sent, tokens, idx))
     return res
 
 
