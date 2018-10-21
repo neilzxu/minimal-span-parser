@@ -5,7 +5,6 @@ import os
 import os.path
 import sys
 import time
-import yaml
 
 import dynet as dy
 import numpy as np
@@ -47,6 +46,8 @@ def run_train(args):
 
     logger.info("Loading development trees from {}...".format(args.dev_path))
     dev_treebank = load_trees(args.dev_path)
+    if args.tree_type != 'treebank':
+        dev_treebank = [tree.convert() for tree in load_trees(args.dev_path)]
     logger.info("Loaded {:,} development examples.".format(len(dev_treebank)))
 
     logger.info("Processing trees for training...")
