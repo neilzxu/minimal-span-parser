@@ -73,7 +73,7 @@ class TopDownParser(object):
         self.label_vocab = label_vocab
         self.lstm_dim = lstm_dim
 
-        if tag_embedding_dim:
+        if tag_embedding_dim > 0:
             self.tag_embeddings = self.model.add_lookup_parameters(
                 (tag_vocab.size, tag_embedding_dim))
         else:
@@ -236,14 +236,17 @@ class ChartParser(object):
         self.label_vocab = label_vocab
         self.lstm_dim = lstm_dim
 
-        self.tag_embeddings = self.model.add_lookup_parameters(
-            (tag_vocab.size, tag_embedding_dim))
+        if tag_embedding_dim > 0:
+            self.tag_embeddings = self.model.add_lookup_parameters(
+                (tag_vocab.size, tag_embedding_dim))
+        else:
+            self.tag_embeddings = None
         self.word_embeddings = self.model.add_lookup_parameters(
             (word_vocab.size, word_embedding_dim))
 
         self.lstm = dy.BiRNNBuilder(
             lstm_layers,
-            tag_embedding_dim + word_embedding_dim,
+            (tag_embedding_dim if tag_embedding_dim else 0) + word_embedding_dim,
             2 * lstm_dim,
             self.model,
             dy.VanillaLSTMBuilder)
@@ -276,7 +279,7 @@ class ChartParser(object):
                 if not count or (is_train and np.random.rand() < 1 / (1 + count)):
                     word = UNK
             word_embedding = self.word_embeddings[self.word_vocab.index(word)]
-            embeddings.append(dy.concatenate([tag_embedding, word_embedding]))
+            embeddings.append(dy.concatenate([tag_embedding, word_embedding]) if self.tag_embeddings else word_embedding)
 
         lstm_outputs = self.lstm.transduce(embeddings)
 
