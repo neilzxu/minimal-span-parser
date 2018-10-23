@@ -251,7 +251,7 @@ def run_test(args):
     test_fscore = evaluate.evalb(args.evalb_dir, test_treebank, test_predicted)
     test_frs_score = evaluate.calc_frs(test_treebank, test_predicted)
     logger.info("test-fscore {} "
-                "test-fuzzy-reordering-score {:4f}"
+                "test-fuzzy-reordering-score {:4f} "
                 "test-elapsed {}".format(test_fscore, test_frs_score,
                                          format_elapsed(start_time)))
 

@@ -46,25 +46,17 @@ def calc_frs(gold_trees: List[TreebankNode],
     result = []
     total_len = 0
     for gold_tree, predicted_tree in zip(gold_trees, predicted_trees):
-        gold_perm = permute_from_tree(gold_tree)
-        if len(gold_perm) > 0:
+        gold_perm = ' '.join(permute_from_tree(gold_tree))
+        if len(gold_perm) > 1:
             predicted_perm = permute_from_tree(predicted_tree)
-            gold_indices = {
-                word: {idx
-                       for idx, _ in items}
-                for word, items in groupby(
-                    sorted(list(enumerate(gold_perm)), key=lambda x: x[1]),
-                    key=lambda x: x[1])
-            }
             idx_mismatches = 0
             # Compare each word w/ prev_word to see if it's offset by 1
-            for idx, word in enumerate(predicted_perm[1:]):
-                prev_word = predicted_perm[idx]
-                if 1 not in {
-                        y - x
-                        for x, y in product(gold_indices[prev_word],
-                                            gold_indices[word]) if y - x > 0
-                }:
+            start_idx = 0
+            for idx in range(2, len(predicted_perm)):
+                if not re.match(
+                        re.escape(' '.join(predicted_perm[start_idx:idx])),
+                        gold_perm):
+                    start_idx = idx - 1
                     idx_mismatches += 1
 
             # Explicit formulation for score
