@@ -151,10 +151,13 @@ def run_train(args):
         dev_fscore = evaluate.evalb(args.evalb_dir, dev_treebank,
                                     dev_predicted)
 
+        dev_frs_score = evaluate.calc_frs(dev_treebank, dev_predicted)
         logger.info("dev-fscore {} "
+                    "dev-fuzzy reordering score {:4f} "
                     "dev-elapsed {} "
                     "total-elapsed {}".format(
                         dev_fscore,
+                        dev_frs_score,
                         format_elapsed(dev_start_time),
                         format_elapsed(start_time),
                     ))
@@ -222,7 +225,12 @@ def run_train(args):
 
 def run_test(args):
     logger.info("Loading test trees from {}...".format(args.test_path))
-    test_treebank = trees.load_trees(args.test_path)
+    if args.tree_type == 'treebank':
+        test_treebank = trees.load_trees(args.test_path)
+    else:
+        test_treebank = [
+            tree.convert() for tree in trees.load_itg_trees(args.test_path)
+        ]
     logger.info("Loaded {:,} test examples.".format(len(test_treebank)))
 
     logger.info("Loading model from {}...".format(args.model_path_base))
@@ -241,12 +249,11 @@ def run_test(args):
         test_predicted.append(predicted.convert())
 
     test_fscore = evaluate.evalb(args.evalb_dir, test_treebank, test_predicted)
-
+    test_frs_score = evaluate.calc_frs(test_treebank, test_predicted)
     logger.info("test-fscore {} "
-                "test-elapsed {}".format(
-                    test_fscore,
-                    format_elapsed(start_time),
-                ))
+                "test-fuzzy-reordering-score {:4f}"
+                "test-elapsed {}".format(test_fscore, test_frs_score,
+                                         format_elapsed(start_time)))
 
 
 def main():
@@ -296,6 +303,8 @@ def main():
     subparser.add_argument("--model-path-base", required=True)
     subparser.add_argument("--evalb-dir", default="EVALB/")
     subparser.add_argument("--test-path", default="data/23.auto.clean")
+    subparser.add_argument(
+        "--tree-type", choices=["itg", "treebank"], required=True)
 
     args = parser.parse_args()
     args.callback(args)

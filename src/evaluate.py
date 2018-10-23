@@ -1,10 +1,12 @@
+from typing import List
+from itertools import groupby, product
 import math
 import os.path
 import re
 import subprocess
 import tempfile
 
-import trees
+from trees import InternalTreebankNode, LeafTreebankNode, TreebankNode
 
 
 class FScore(object):
@@ -18,6 +20,61 @@ class FScore(object):
             self.recall, self.precision, self.fscore)
 
 
+def permute_from_tree(tree: TreebankNode) -> List[str]:
+    if isinstance(tree, LeafTreebankNode):
+        return [tree.word]
+    # Assume it's an InternalTreebankNode
+    elif tree.label == 'R':
+        return [
+            word for child in list(tree.children)[::-1]
+            for word in permute_from_tree(child)
+        ]
+    # Straight label
+    else:
+        return [
+            word for child in list(tree.children)
+            for word in permute_from_tree(child)
+        ]
+
+
+'''Calculate the "fuzzy reordering score" from "A Lightweight Evaluation
+Framework for Machine Translation Reordering" (Talbot 2011)'''
+
+
+def calc_frs(gold_trees: List[TreebankNode],
+             predicted_trees: List[TreebankNode]) -> float:
+    result = []
+    total_len = 0
+    for gold_tree, predicted_tree in zip(gold_trees, predicted_trees):
+        gold_perm = permute_from_tree(gold_tree)
+        if len(gold_perm) > 0:
+            predicted_perm = permute_from_tree(predicted_tree)
+            gold_indices = {
+                word: {idx
+                       for idx, _ in items}
+                for word, items in groupby(
+                    sorted(list(enumerate(gold_perm)), key=lambda x: x[1]),
+                    key=lambda x: x[1])
+            }
+            idx_mismatches = 0
+            # Compare each word w/ prev_word to see if it's offset by 1
+            for idx, word in enumerate(predicted_perm[1:]):
+                prev_word = predicted_perm[idx]
+                if 1 not in {
+                        y - x
+                        for x, y in product(gold_indices[prev_word],
+                                            gold_indices[word]) if y - x > 0
+                }:
+                    idx_mismatches += 1
+
+            # Explicit formulation for score
+            score = 1 - idx_mismatches / (len(gold_perm) - 1)
+
+            result.append((len(gold_perm) - 1) * score)
+            total_len += len(gold_perm) - 1
+    return sum(result) / total_len
+
+
 def evalb(evalb_dir, gold_trees, predicted_trees):
     assert os.path.exists(evalb_dir)
     evalb_program_path = os.path.join(evalb_dir, "evalb")
@@ -27,8 +84,8 @@ def evalb(evalb_dir, gold_trees, predicted_trees):
 
     assert len(gold_trees) == len(predicted_trees)
     for gold_tree, predicted_tree in zip(gold_trees, predicted_trees):
-        assert isinstance(gold_tree, trees.TreebankNode)
-        assert isinstance(predicted_tree, trees.TreebankNode)
+        assert isinstance(gold_tree, TreebankNode)
+        assert isinstance(predicted_tree, TreebankNode)
         gold_leaves = list(gold_tree.leaves())
         predicted_leaves = list(predicted_tree.leaves())
         assert len(gold_leaves) == len(predicted_leaves)
