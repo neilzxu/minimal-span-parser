@@ -1,3 +1,5 @@
+from typing import Union, Dict
+
 import functools
 
 import dynet as dy
@@ -20,7 +22,13 @@ def augment(scores, oracle_index):
 
 
 class Feedforward(object):
-    def __init__(self, model, input_dim, hidden_dims, output_dim):
+    def __init__(
+            self,
+            model,
+            input_dim,
+            hidden_dims,
+            output_dim,
+    ):
         self.spec = locals()
         self.spec.pop("self")
         self.spec.pop("model")
@@ -59,6 +67,7 @@ class TopDownParser(object):
             tag_vocab,
             word_vocab,
             label_vocab,
+            lang_embeddings: Union[Dict[str, np.ndarray], None],
             tag_embedding_dim,
             word_embedding_dim,
             lstm_layers,
@@ -77,6 +86,20 @@ class TopDownParser(object):
         self.label_vocab = label_vocab
         self.lstm_dim = lstm_dim
 
+        if lang_embeddings:
+            max_dim = max([len(x.shape) for x in lang_embeddings.values()])
+            min_dim = min([len(x.shape) for x in lang_embeddings.values()])
+            assert min_dim == max_dim
+            assert max_dim == 1
+            max_embed_dim = max([x.shape[0] for x in lang_embeddings.values()])
+            min_embed_dim = min([x.shape[0] for x in lang_embeddings.values()])
+            assert min_embed_dim == max_embed_dim
+            self.lang_dim = max_embed_dim
+            self.lang_embeddings = lang_embeddings
+        else:
+            self.lang_dim = 0
+            self.lang_embeddings = None
+
         if tag_embedding_dim > 0:
             self.tag_embeddings = self.model.add_lookup_parameters(
                 (tag_vocab.size, tag_embedding_dim))
@@ -87,7 +110,7 @@ class TopDownParser(object):
 
         self.lstm = dy.BiRNNBuilder(
             lstm_layers, (tag_embedding_dim if tag_embedding_dim else 0) +
-            word_embedding_dim, 2 * lstm_dim, self.model,
+            word_embedding_dim + self.lang_dim, 2 * lstm_dim, self.model,
             dy.VanillaLSTMBuilder)
 
         self.f_label = Feedforward(self.model, 2 * lstm_dim,
@@ -104,7 +127,7 @@ class TopDownParser(object):
     def from_spec(cls, spec, model):
         return cls(model, **spec)
 
-    def parse(self, sentence, gold=None, explore=True):
+    def parse(self, sentence, gold=None, explore=True, lang: str = None):
         is_train = gold is not None
 
         if is_train:
@@ -122,8 +145,14 @@ class TopDownParser(object):
                                  and np.random.rand() < 1 / (1 + count)):
                     word = UNK
             word_embedding = self.word_embeddings[self.word_vocab.index(word)]
+            input_embeddings = [tag_embedding, word_embedding]
+            if self.lang_embeddings:
+                assert lang
+                input_embeddings.append(
+                    dy.inputTensor(self.lang_embeddings[lang]))
+
             embeddings.append(
-                dy.concatenate([tag_embedding, word_embedding]) if self.
+                dy.concatenate(input_embeddings) if self.
                 tag_embeddings else word_embedding)
 
         lstm_outputs = self.lstm.transduce(embeddings)
@@ -222,6 +251,7 @@ class ChartParser(object):
             tag_vocab,
             word_vocab,
             label_vocab,
+            lang_embeddings: Union[Dict[str, np.ndarray], None],
             tag_embedding_dim,
             word_embedding_dim,
             lstm_layers,
@@ -239,6 +269,20 @@ class ChartParser(object):
         self.label_vocab = label_vocab
         self.lstm_dim = lstm_dim
 
+        if lang_embeddings:
+            max_dim = max([len(x.shape) for x in lang_embeddings.values()])
+            min_dim = min([len(x.shape) for x in lang_embeddings.values()])
+            assert min_dim == max_dim
+            assert max_dim == 1
+            max_embed_dim = max([x.shape[0] for x in lang_embeddings.values()])
+            min_embed_dim = min([x.shape[0] for x in lang_embeddings.values()])
+            assert min_embed_dim == max_embed_dim
+            self.lang_dim = max_embed_dim
+            self.lang_embeddings = lang_embeddings
+        else:
+            self.lang_dim = 0
+            self.lang_embeddings = None
+
         if tag_embedding_dim > 0:
             self.tag_embeddings = self.model.add_lookup_parameters(
                 (tag_vocab.size, tag_embedding_dim))
@@ -249,7 +293,7 @@ class ChartParser(object):
 
         self.lstm = dy.BiRNNBuilder(
             lstm_layers, (tag_embedding_dim if tag_embedding_dim else 0) +
-            word_embedding_dim, 2 * lstm_dim, self.model,
+            word_embedding_dim + self.lang_dim, 2 * lstm_dim, self.model,
             dy.VanillaLSTMBuilder)
 
         self.f_label = Feedforward(self.model, 2 * lstm_dim,
@@ -264,7 +308,7 @@ class ChartParser(object):
     def from_spec(cls, spec, model):
         return cls(model, **spec)
 
-    def parse(self, sentence, gold=None):
+    def parse(self, sentence, gold=None, lang: str = None):
         is_train = gold is not None
 
         if is_train:
@@ -282,6 +326,12 @@ class ChartParser(object):
                                  and np.random.rand() < 1 / (1 + count)):
                     word = UNK
             word_embedding = self.word_embeddings[self.word_vocab.index(word)]
+            input_embeddings = [tag_embedding, word_embedding]
+            if self.lang_embeddings:
+                assert lang
+                input_embeddings.append(
+                    dy.inputTensor(self.lang_embeddings[lang]))
+
             embeddings.append(
                 dy.concatenate([tag_embedding, word_embedding]) if self.
                 tag_embeddings else word_embedding)

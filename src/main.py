@@ -1,3 +1,4 @@
+from typing import Dict
 import argparse
 import itertools
 import logging
@@ -31,6 +32,35 @@ def format_elapsed(start_time):
     return elapsed_string
 
 
+def load_language_embeddings(lang_file) -> Dict[str, np.ndarray]:
+    print(lang_file)
+    arr = np.load(lang_file)
+    langs = arr['langs']
+    features = arr['data']
+    return {
+        langs[i][:2]: features[i].reshape((-1))
+        for i in range(langs.shape[0])
+    }
+
+
+def load_files_and_langs(langs, paths, load_trees):
+    paths = paths.split(',')
+    if langs:
+        langs = langs.split(',')
+
+        assert len(langs) == len(paths)
+        lang_labels = []
+        tot_trees = []
+        for lang, path in zip(langs, paths):
+            trees = load_trees(path)
+            tree_langs = [lang for i in range(len(trees))]
+            tot_trees.extend(trees)
+            lang_labels.extend(tree_langs)
+        return (lang_labels, tot_trees)
+    else:
+        return (None, [tree for path in paths for tree in load_trees(path)])
+
+
 def run_train(args):
     logger.addHandler(logging.FileHandler(f"{args.model_path_base}.log"))
     logger.info(args)
@@ -38,16 +68,23 @@ def run_train(args):
         logger.info("Setting numpy random seed to {}...".format(
             args.numpy_seed))
         np.random.seed(args.numpy_seed)
-    load_trees = trees.load_trees if args.tree_type == 'treebank' else trees.load_itg_trees
 
-    logger.info("Loading training trees from {}...".format(args.train_path))
-    train_treebank = load_trees(args.train_path)
-    logger.info("Loaded {:,} training examples.".format(len(train_treebank)))
+    load_trees = trees.load_itg_trees if args.tree_type == 'itg' else trees.load_trees
 
-    logger.info("Loading development trees from {}...".format(args.dev_path))
-    dev_treebank = load_trees(args.dev_path)
+    if args.language_embedding:
+        language_embeddings = load_language_embeddings(args.language_embedding)
+    else:
+        language_embeddings = None
+
+    train_langs, train_treebank = load_files_and_langs(
+        args.train_langs, args.train_paths, load_trees)
+    logger.info("Loaded {} training examples.".format(len(train_treebank)))
+
+    dev_langs, dev_treebank = load_files_and_langs(args.dev_langs,
+                                                   args.dev_paths, load_trees)
+
     if args.tree_type != 'treebank':
-        dev_treebank = [tree.convert() for tree in load_trees(args.dev_path)]
+        dev_treebank = [tree.convert() for tree in dev_treebank]
     logger.info("Loaded {:,} development examples.".format(len(dev_treebank)))
 
     logger.info("Processing trees for training...")
@@ -104,6 +141,7 @@ def run_train(args):
             tag_vocab,
             word_vocab,
             label_vocab,
+            language_embeddings,
             args.tag_embedding_dim,
             args.word_embedding_dim,
             args.lstm_layers,
@@ -118,6 +156,7 @@ def run_train(args):
             tag_vocab,
             word_vocab,
             label_vocab,
+            language_embeddings,
             args.tag_embedding_dim,
             args.word_embedding_dim,
             args.lstm_layers,
@@ -131,22 +170,29 @@ def run_train(args):
     current_processed = 0
     check_every = len(train_parse) / args.checks_per_epoch
     best_dev_fscore = -np.inf
+    best_epoch = None
     best_dev_model_path = None
 
     start_time = time.time()
 
-    def check_dev():
+    def check_dev(epoch=None):
         nonlocal best_dev_fscore
         nonlocal best_dev_model_path
 
         dev_start_time = time.time()
-
         dev_predicted = []
-        for tree in dev_treebank:
-            dy.renew_cg()
-            sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
-            predicted, _ = parser.parse(sentence)
-            dev_predicted.append(predicted.convert())
+        if language_embeddings:
+            for lang, tree in zip(dev_langs, dev_treebank):
+                dy.renew_cg()
+                sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
+                predicted, _ = parser.parse(sentence, lang=lang)
+                dev_predicted.append(predicted.convert())
+        else:
+            for tree in dev_treebank:
+                dy.renew_cg()
+                sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
+                predicted, _ = parser.parse(sentence)
+                dev_predicted.append(predicted.convert())
 
         dev_fscore = evaluate.evalb(args.evalb_dir, dev_treebank,
                                     dev_predicted)
@@ -172,6 +218,8 @@ def run_train(args):
                         os.remove(path)
 
             best_dev_fscore = dev_fscore.fscore
+            if epoch:
+                best_epoch = epoch
             best_dev_model_path = "{}_dev={:.2f}".format(
                 args.model_path_base, dev_fscore.fscore)
             logger.info(
@@ -181,22 +229,49 @@ def run_train(args):
     for epoch in itertools.count(start=1):
         if args.epochs is not None and epoch > args.epochs:
             break
+        if args.patience and best_epoch and epoch - best_epoch > patience:
+            logger.info(
+                "Patience limit of {args.patience} reached. Best epoch: {best_epoch}. Last epoch: {epoch - 1}"
+            )
+            break
 
         np.random.shuffle(train_parse)
         epoch_start_time = time.time()
 
-        for start_index in range(0, len(train_parse), args.batch_size):
+        for start_index in range(
+                0,
+                min(args.train_limit, len(train_parse))
+                if args.train_limit else len(train_parse), args.batch_size):
             dy.renew_cg()
             batch_losses = []
-            for tree in train_parse[start_index:start_index + args.batch_size]:
-                sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
-                if args.parser_type == "top-down":
-                    _, loss = parser.parse(sentence, tree, args.explore)
-                else:
-                    _, loss = parser.parse(sentence, tree)
-                batch_losses.append(loss)
-                total_processed += 1
-                current_processed += 1
+            if language_embeddings:
+                for lang, tree in zip(
+                        train_langs[start_index:start_index + args.batch_size],
+                        train_parse[start_index:start_index +
+                                    args.batch_size]):
+                    sentence = [(leaf.tag, leaf.word)
+                                for leaf in tree.leaves()]
+                    if args.parser_type == "top-down":
+                        _, loss = parser.parse(sentence, tree, args.explore,
+                                               lang)
+                    else:
+                        _, loss = parser.parse(sentence, tree, lang)
+                    batch_losses.append(loss)
+                    total_processed += 1
+                    current_processed += 1
+            else:
+                for tree in train_parse[start_index:start_index +
+                                        args.batch_size]:
+                    sentence = [(leaf.tag, leaf.word)
+                                for leaf in tree.leaves()]
+                    if args.parser_type == "top-down":
+                        _, loss = parser.parse(
+                            sentence, tree, explore=args.explore)
+                    else:
+                        _, loss = parser.parse(sentence, tree)
+                    batch_losses.append(loss)
+                    total_processed += 1
+                    current_processed += 1
 
             batch_loss = dy.average(batch_losses)
             batch_loss_value = batch_loss.scalar_value()
@@ -220,33 +295,41 @@ def run_train(args):
 
             if current_processed >= check_every:
                 current_processed -= check_every
-                check_dev()
+                check_dev(epoch)
 
 
 def run_test(args):
-    logger.info("Loading test trees from {}...".format(args.test_path))
-    if args.tree_type == 'treebank':
-        test_treebank = trees.load_trees(args.test_path)
-    else:
-        test_treebank = [
-            tree.convert() for tree in trees.load_itg_trees(args.test_path)
-        ]
+    logger.info("Loading test trees from {}...".format(args.test_paths))
+    test_langs, test_paths = load_files_and_langs(
+        args.test_langs, args.test_paths, tree.load_trees
+        if args.tree_type == 'treebank' else trees.load_itg_trees)
     logger.info("Loaded {:,} test examples.".format(len(test_treebank)))
 
     logger.info("Loading model from {}...".format(args.model_path_base))
     model = dy.ParameterCollection()
     [parser] = dy.load(args.model_path_base, model)
 
+    if args.language_embddings and test_langs:
+        parser.lang_embeddings = load_language_embddings(
+            args.language_embddings)
+
     logger.info("Parsing test sentences...")
 
     start_time = time.time()
 
     test_predicted = []
-    for tree in test_treebank:
-        dy.renew_cg()
-        sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
-        predicted, _ = parser.parse(sentence)
-        test_predicted.append(predicted.convert())
+    if test_langs and args.language_embeddings:
+        for lang, tree in zip(test_langs, test_treebank):
+            dy.renew_cg()
+            sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
+            predicted, _ = parser.parse(sentence, lang=lang)
+            test_predicted.append(predicted.convert())
+    else:
+        for tree in test_treebank:
+            dy.renew_cg()
+            sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
+            predicted, _ = parser.parse(sentence)
+            test_predicted.append(predicted.convert())
 
     test_fscore = evaluate.evalb(args.evalb_dir, test_treebank, test_predicted)
     test_frs_score = evaluate.calc_frs(test_treebank, test_predicted)
@@ -287,24 +370,34 @@ def main():
     subparser.add_argument("--explore", action="store_true")
     subparser.add_argument("--model-path-base", required=True)
     subparser.add_argument("--evalb-dir", default="EVALB/")
-    subparser.add_argument("--train-path", default="data/02-21.10way.clean")
-    subparser.add_argument("--dev-path", default="data/22.auto.clean")
+    subparser.add_argument("--train-paths", default="data/02-21.10way.clean")
+    subparser.add_argument("--train-langs", default=None)
+    subparser.add_argument("--train-limit", type=int, default=None)
+    subparser.add_argument("--dev-paths", default="data/22.auto.clean")
+    subparser.add_argument("--dev-langs", default=None)
+    subparser.add_argument("--dev-limit", type=int, default=None)
     subparser.add_argument("--batch-size", type=int, default=10)
     subparser.add_argument("--epochs", type=int)
     subparser.add_argument("--checks-per-epoch", type=int, default=4)
     subparser.add_argument("--print-vocabs", action="store_true")
     subparser.add_argument(
         "--tree-type", choices=["itg", "treebank"], required=True)
-
+    '''
+    Language embedding file should look something along the lines of the formatting
+    done with the uriel data
+    '''
+    subparser.add_argument("--language-embedding", type=str)
     subparser = subparsers.add_parser("test")
     subparser.set_defaults(callback=run_test)
     for arg in dynet_args:
         subparser.add_argument(arg)
     subparser.add_argument("--model-path-base", required=True)
     subparser.add_argument("--evalb-dir", default="EVALB/")
-    subparser.add_argument("--test-path", default="data/23.auto.clean")
+    subparser.add_argument("--test-paths", default="data/23.auto.clean")
+    subparser.add_argument("--test-langs", default=None)
     subparser.add_argument(
         "--tree-type", choices=["itg", "treebank"], required=True)
+    subparser.add_argument("--language-embedding", type=str)
 
     args = parser.parse_args()
     args.callback(args)

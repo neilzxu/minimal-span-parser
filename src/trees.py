@@ -175,6 +175,7 @@ def load_itg_tree(sent, tree, idx):
 
 def load_itg_trees(path):
     with open(path, encoding='utf-8') as in_file:
+        langs = []
         res = []
         for idx, sent, tree in zip(in_file, in_file, in_file):
             if tree.strip() != 'None':
