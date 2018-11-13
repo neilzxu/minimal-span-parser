@@ -14,6 +14,7 @@ import evaluate
 import parse
 import trees
 import vocabulary
+import yaml
 
 LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
 logger = logging.getLogger('minimal-span-parser')
@@ -33,14 +34,15 @@ def format_elapsed(start_time):
 
 
 def load_language_embeddings(lang_file) -> Dict[str, np.ndarray]:
-    print(lang_file)
     arr = np.load(lang_file)
     langs = arr['langs']
     features = arr['data']
-    return {
+
+    result = {
         langs[i][:2]: features[i].reshape((-1))
         for i in range(langs.shape[0])
     }
+    return result
 
 
 def load_files_and_langs(langs, paths, load_trees):
@@ -51,7 +53,7 @@ def load_files_and_langs(langs, paths, load_trees):
         assert len(langs) == len(paths)
         lang_labels = []
         tot_trees = []
-        for lang, path in zip(langs, paths):
+        for lang, path in [(lang, path) for lang, path in zip(langs, paths) if lang and path]:
             trees = load_trees(path)
             tree_langs = [lang for i in range(len(trees))]
             tot_trees.extend(trees)
@@ -141,7 +143,6 @@ def run_train(args):
             tag_vocab,
             word_vocab,
             label_vocab,
-            language_embeddings,
             args.tag_embedding_dim,
             args.word_embedding_dim,
             args.lstm_layers,
@@ -149,6 +150,7 @@ def run_train(args):
             args.label_hidden_dim,
             args.split_hidden_dim,
             args.dropout,
+            language_embeddings,
         )
     else:
         parser = parse.ChartParser(
@@ -156,48 +158,56 @@ def run_train(args):
             tag_vocab,
             word_vocab,
             label_vocab,
-            language_embeddings,
             args.tag_embedding_dim,
             args.word_embedding_dim,
             args.lstm_layers,
             args.lstm_dim,
             args.label_hidden_dim,
             args.dropout,
+            language_embeddings,
         )
     trainer = dy.AdamTrainer(model)
 
     total_processed = 0
     current_processed = 0
-    check_every = len(train_parse) / args.checks_per_epoch
+    check_every = args.checks_every
     best_dev_fscore = -np.inf
-    best_epoch = None
+    best_processed = None
     best_dev_model_path = None
 
     start_time = time.time()
 
-    def check_dev(epoch=None):
+    def check_dev():
         nonlocal best_dev_fscore
         nonlocal best_dev_model_path
+        nonlocal best_processed
+        nonlocal total_processed
 
         dev_start_time = time.time()
         dev_predicted = []
+
+        if args.dev_limit:
+            dev_sample = np.random.choice(dev_treebank, args.dev_limit, replace=False)
+        else:
+            dev_sample = dev_treebank
+
         if language_embeddings:
-            for lang, tree in zip(dev_langs, dev_treebank):
+            for lang, tree in zip(dev_langs, dev_sample):
                 dy.renew_cg()
                 sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
                 predicted, _ = parser.parse(sentence, lang=lang)
                 dev_predicted.append(predicted.convert())
         else:
-            for tree in dev_treebank:
+            for tree in dev_sample:
                 dy.renew_cg()
                 sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
                 predicted, _ = parser.parse(sentence)
                 dev_predicted.append(predicted.convert())
 
-        dev_fscore = evaluate.evalb(args.evalb_dir, dev_treebank,
+        dev_fscore = evaluate.evalb(args.evalb_dir, dev_sample,
                                     dev_predicted)
 
-        dev_frs_score = evaluate.calc_frs(dev_treebank, dev_predicted)
+        dev_frs_score = evaluate.calc_frs(dev_sample, dev_predicted)
         logger.info("dev-fscore {} "
                     "dev-fuzzy reordering score {:4f} "
                     "dev-elapsed {} "
@@ -218,8 +228,7 @@ def run_train(args):
                         os.remove(path)
 
             best_dev_fscore = dev_fscore.fscore
-            if epoch:
-                best_epoch = epoch
+            best_processed = total_processed
             best_dev_model_path = "{}_dev={:.2f}".format(
                 args.model_path_base, dev_fscore.fscore)
             logger.info(
@@ -228,11 +237,6 @@ def run_train(args):
 
     for epoch in itertools.count(start=1):
         if args.epochs is not None and epoch > args.epochs:
-            break
-        if args.patience and best_epoch and epoch - best_epoch > patience:
-            logger.info(
-                "Patience limit of {args.patience} reached. Best epoch: {best_epoch}. Last epoch: {epoch - 1}"
-            )
             break
 
         np.random.shuffle(train_parse)
@@ -295,30 +299,45 @@ def run_train(args):
 
             if current_processed >= check_every:
                 current_processed -= check_every
-                check_dev(epoch)
+                check_dev()
+                if best_processed and total_processed - best_processed > args.patience:
+                    break
 
+        if best_processed and total_processed - best_processed > args.patience:
+            logger.info(
+                f"Patience limit of {args.patience} reached. Best processed: {best_processed}. Last epoch: {epoch - 1}"
+            )
+            break
 
 def run_test(args):
     logger.info("Loading test trees from {}...".format(args.test_paths))
-    test_langs, test_paths = load_files_and_langs(
+
+    test_langs, test_treebank = load_files_and_langs(
         args.test_langs, args.test_paths, tree.load_trees
         if args.tree_type == 'treebank' else trees.load_itg_trees)
+    if args.tree_type != 'treebank':
+        test_treebank = [tree.convert() for tree in test_treebank]
+
     logger.info("Loaded {:,} test examples.".format(len(test_treebank)))
 
     logger.info("Loading model from {}...".format(args.model_path_base))
     model = dy.ParameterCollection()
     [parser] = dy.load(args.model_path_base, model)
 
-    if args.language_embddings and test_langs:
-        parser.lang_embeddings = load_language_embddings(
-            args.language_embddings)
+    if args.language_embedding and test_langs:
+        logger.debug(
+            f"Setting up language embeddings from {args.language_embedding} for {test_langs}"
+        )
+        parser.lang_embeddings = load_language_embeddings(
+            args.language_embedding)
 
     logger.info("Parsing test sentences...")
 
     start_time = time.time()
 
     test_predicted = []
-    if test_langs and args.language_embeddings:
+
+    if test_langs and args.language_embedding:
         for lang, tree in zip(test_langs, test_treebank):
             dy.renew_cg()
             sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
@@ -337,6 +356,15 @@ def run_test(args):
                 "test-fuzzy-reordering-score {:4f} "
                 "test-elapsed {}".format(test_fscore, test_frs_score,
                                          format_elapsed(start_time)))
+    if args.result_path:
+        with open(args.result_path, 'w') as out_file:
+            result_dict = {
+            'recall': test_fscore.recall,
+                'precision': test_fscore.precision,
+                'fscore': test_fscore.fscore,
+                'fuzzy_reorder_score': test_frs_score
+            }
+            yaml.dump(result_dict, out_file)
 
 
 def main():
@@ -355,9 +383,12 @@ def main():
 
     subparser = subparsers.add_parser("train")
     subparser.set_defaults(callback=run_train)
+
     for arg in dynet_args:
         subparser.add_argument(arg)
     subparser.add_argument("--numpy-seed", type=int)
+
+    # Model options
     subparser.add_argument(
         "--parser-type", choices=["top-down", "chart"], required=True)
     subparser.add_argument("--tag-embedding-dim", type=int, default=50)
@@ -366,9 +397,14 @@ def main():
     subparser.add_argument("--lstm-dim", type=int, default=250)
     subparser.add_argument("--label-hidden-dim", type=int, default=250)
     subparser.add_argument("--split-hidden-dim", type=int, default=250)
-    subparser.add_argument("--dropout", type=float, default=0.4)
-    subparser.add_argument("--explore", action="store_true")
     subparser.add_argument("--model-path-base", required=True)
+    '''
+    Language embedding file should look something along the lines of the formatting
+    done with the uriel data
+    '''
+    subparser.add_argument("--language-embedding", type=str)
+
+    # Paths for eval and training
     subparser.add_argument("--evalb-dir", default="EVALB/")
     subparser.add_argument("--train-paths", default="data/02-21.10way.clean")
     subparser.add_argument("--train-langs", default=None)
@@ -376,28 +412,35 @@ def main():
     subparser.add_argument("--dev-paths", default="data/22.auto.clean")
     subparser.add_argument("--dev-langs", default=None)
     subparser.add_argument("--dev-limit", type=int, default=None)
+
+    # Training options
+    subparser.add_argument("--dropout", type=float, default=0.4)
+    subparser.add_argument("--explore", action="store_true")
     subparser.add_argument("--batch-size", type=int, default=10)
     subparser.add_argument("--epochs", type=int)
-    subparser.add_argument("--checks-per-epoch", type=int, default=4)
+    subparser.add_argument("--patience", type=int, default=5000)
+    # Checks every x number of batches
+    subparser.add_argument("--checks-every", type=int, default=1000)
     subparser.add_argument("--print-vocabs", action="store_true")
     subparser.add_argument(
         "--tree-type", choices=["itg", "treebank"], required=True)
-    '''
-    Language embedding file should look something along the lines of the formatting
-    done with the uriel data
-    '''
-    subparser.add_argument("--language-embedding", type=str)
+
+
     subparser = subparsers.add_parser("test")
     subparser.set_defaults(callback=run_test)
+
     for arg in dynet_args:
         subparser.add_argument(arg)
+
+    subparser.add_argument("--no-prediction", action='store_true')
     subparser.add_argument("--model-path-base", required=True)
     subparser.add_argument("--evalb-dir", default="EVALB/")
     subparser.add_argument("--test-paths", default="data/23.auto.clean")
-    subparser.add_argument("--test-langs", default=None)
+    subparser.add_argument("--test-langs", type=str)
     subparser.add_argument(
         "--tree-type", choices=["itg", "treebank"], required=True)
     subparser.add_argument("--language-embedding", type=str)
+    subparser.add_argument('--result-path', type=str, default=None)
 
     args = parser.parse_args()
     args.callback(args)

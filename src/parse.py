@@ -67,7 +67,6 @@ class TopDownParser(object):
             tag_vocab,
             word_vocab,
             label_vocab,
-            lang_embeddings: Union[Dict[str, np.ndarray], None],
             tag_embedding_dim,
             word_embedding_dim,
             lstm_layers,
@@ -75,6 +74,7 @@ class TopDownParser(object):
             label_hidden_dim,
             split_hidden_dim,
             dropout,
+            lang_embeddings: Union[Dict[str, np.ndarray], None] = None,
     ):
         self.spec = locals()
         self.spec.pop("self")
@@ -251,13 +251,13 @@ class ChartParser(object):
             tag_vocab,
             word_vocab,
             label_vocab,
-            lang_embeddings: Union[Dict[str, np.ndarray], None],
             tag_embedding_dim,
             word_embedding_dim,
             lstm_layers,
             lstm_dim,
             label_hidden_dim,
             dropout,
+            lang_embeddings: Union[Dict[str, np.ndarray], None] = None,
     ):
         self.spec = locals()
         self.spec.pop("self")
