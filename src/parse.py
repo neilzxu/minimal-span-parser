@@ -1,4 +1,4 @@
-from typing import Union, Dict
+from typing import Union, Dict, List
 
 import functools
 
@@ -74,7 +74,7 @@ class TopDownParser(object):
             label_hidden_dim,
             split_hidden_dim,
             dropout,
-            lang_embeddings: Union[Dict[str, np.ndarray], None] = None,
+            lang_embeddings: Union[Dict[str, np.ndarray], List[str], None] = None,
     ):
         self.spec = locals()
         self.spec.pop("self")
@@ -86,7 +86,11 @@ class TopDownParser(object):
         self.label_vocab = label_vocab
         self.lstm_dim = lstm_dim
 
-        if lang_embeddings:
+        if lang_embeddings and isinstance(lang_embeddings, List):
+            self.lang_dim = len(lang_embeddings)
+            self.lang_embeddings = {lang: v for lang, v in
+                                    zip(lang_embeddings, np.eye(self.lang_dim)[list(range(self.lang_dim))])}
+        elif lang_embeddings:
             max_dim = max([len(x.shape) for x in lang_embeddings.values()])
             min_dim = min([len(x.shape) for x in lang_embeddings.values()])
             assert min_dim == max_dim
@@ -110,7 +114,7 @@ class TopDownParser(object):
 
         self.lstm = dy.BiRNNBuilder(
             lstm_layers, (tag_embedding_dim if tag_embedding_dim else 0) +
-            word_embedding_dim + self.lang_dim, 2 * lstm_dim, self.model,
+                         word_embedding_dim + self.lang_dim, 2 * lstm_dim, self.model,
             dy.VanillaLSTMBuilder)
 
         self.f_label = Feedforward(self.model, 2 * lstm_dim,
@@ -153,7 +157,7 @@ class TopDownParser(object):
 
             embeddings.append(
                 dy.concatenate(input_embeddings) if self.
-                tag_embeddings else word_embedding)
+                    tag_embeddings else word_embedding)
 
         lstm_outputs = self.lstm.transduce(embeddings)
 
@@ -178,7 +182,7 @@ class TopDownParser(object):
             label_scores_np = label_scores.npvalue()
             argmax_label_index = int(
                 label_scores_np.argmax() if right -
-                left < len(sentence) else label_scores_np[1:].argmax() + 1)
+                                            left < len(sentence) else label_scores_np[1:].argmax() + 1)
             argmax_label = self.label_vocab.value(argmax_label_index)
 
             if is_train:
@@ -206,7 +210,7 @@ class TopDownParser(object):
             right_scores = self.f_split(
                 dy.concatenate_to_batch(right_encodings))
             split_scores = left_scores + right_scores
-            split_scores = dy.reshape(split_scores, (len(left_encodings), ))
+            split_scores = dy.reshape(split_scores, (len(left_encodings),))
 
             if is_train:
                 oracle_splits = gold.oracle_splits(left, right)
@@ -257,7 +261,7 @@ class ChartParser(object):
             lstm_dim,
             label_hidden_dim,
             dropout,
-            lang_embeddings: Union[Dict[str, np.ndarray], None] = None,
+            lang_embeddings: Union[Dict[str, np.ndarray], List[str], None] = None,
     ):
         self.spec = locals()
         self.spec.pop("self")
@@ -269,7 +273,11 @@ class ChartParser(object):
         self.label_vocab = label_vocab
         self.lstm_dim = lstm_dim
 
-        if lang_embeddings:
+        if lang_embeddings and isinstance(lang_embeddings, List):
+            self.lang_dim = len(lang_embeddings)
+            self.lang_embeddings = {lang: v for lang, v in
+                                    zip(lang_embeddings, np.eye(self.lang_dim)[list(range(self.lang_dim))])}
+        elif lang_embeddings:
             max_dim = max([len(x.shape) for x in lang_embeddings.values()])
             min_dim = min([len(x.shape) for x in lang_embeddings.values()])
             assert min_dim == max_dim
@@ -293,7 +301,7 @@ class ChartParser(object):
 
         self.lstm = dy.BiRNNBuilder(
             lstm_layers, (tag_embedding_dim if tag_embedding_dim else 0) +
-            word_embedding_dim + self.lang_dim, 2 * lstm_dim, self.model,
+                         word_embedding_dim + self.lang_dim, 2 * lstm_dim, self.model,
             dy.VanillaLSTMBuilder)
 
         self.f_label = Feedforward(self.model, 2 * lstm_dim,
@@ -334,7 +342,7 @@ class ChartParser(object):
 
             embeddings.append(
                 dy.concatenate([tag_embedding, word_embedding]) if self.
-                tag_embeddings else word_embedding)
+                    tag_embeddings else word_embedding)
 
         lstm_outputs = self.lstm.transduce(embeddings)
 
@@ -401,8 +409,8 @@ class ChartParser(object):
                         best_split = max(
                             range(left + 1, right),
                             key=lambda split:
-                                chart[left, split][1].value() +
-                                chart[split, right][1].value())
+                            chart[left, split][1].value() +
+                            chart[split, right][1].value())
 
                     left_trees, left_score = chart[left, best_split]
                     right_trees, right_score = chart[best_split, right]

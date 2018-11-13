@@ -313,42 +313,48 @@ def run_test(args):
     logger.info("Loading test trees from {}...".format(args.test_paths))
 
     test_langs, test_treebank = load_files_and_langs(
-        args.test_langs, args.test_paths, tree.load_trees
+        args.test_langs, args.test_paths, trees.load_trees
         if args.tree_type == 'treebank' else trees.load_itg_trees)
     if args.tree_type != 'treebank':
         test_treebank = [tree.convert() for tree in test_treebank]
 
     logger.info("Loaded {:,} test examples.".format(len(test_treebank)))
 
-    logger.info("Loading model from {}...".format(args.model_path_base))
-    model = dy.ParameterCollection()
-    [parser] = dy.load(args.model_path_base, model)
-
-    if args.language_embedding and test_langs:
-        logger.debug(
-            f"Setting up language embeddings from {args.language_embedding} for {test_langs}"
-        )
-        parser.lang_embeddings = load_language_embeddings(
-            args.language_embedding)
-
-    logger.info("Parsing test sentences...")
-
-    start_time = time.time()
-
     test_predicted = []
-
-    if test_langs and args.language_embedding:
-        for lang, tree in zip(test_langs, test_treebank):
-            dy.renew_cg()
-            sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
-            predicted, _ = parser.parse(sentence, lang=lang)
-            test_predicted.append(predicted.convert())
-    else:
+    if args.no_prediction:
         for tree in test_treebank:
-            dy.renew_cg()
-            sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
-            predicted, _ = parser.parse(sentence)
-            test_predicted.append(predicted.convert())
+            children = [trees.LeafTreebankNode(leaf.tag, leaf.word) for leaf in tree.leaves()]
+            test_predicted.append(trees.InternalTreebankNode('S', children))
+        start_time = time.time()
+    else:
+        logger.info("Loading model from {}...".format(args.model_path_base))
+        model = dy.ParameterCollection()
+        [parser] = dy.load(args.model_path_base, model)
+
+        if args.language_embedding and test_langs:
+            logger.debug(
+                f"Setting up language embeddings from {args.language_embedding} for {test_langs}"
+            )
+            parser.lang_embeddings = load_language_embeddings(
+                args.language_embedding)
+
+        logger.info("Parsing test sentences...")
+
+        start_time = time.time()
+
+
+        if test_langs and args.language_embedding:
+            for lang, tree in zip(test_langs, test_treebank):
+                dy.renew_cg()
+                sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
+                predicted, _ = parser.parse(sentence, lang=lang)
+                test_predicted.append(predicted.convert())
+        else:
+            for tree in test_treebank:
+                dy.renew_cg()
+                sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
+                predicted, _ = parser.parse(sentence)
+                test_predicted.append(predicted.convert())
 
     test_fscore = evaluate.evalb(args.evalb_dir, test_treebank, test_predicted)
     test_frs_score = evaluate.calc_frs(test_treebank, test_predicted)
@@ -356,15 +362,15 @@ def run_test(args):
                 "test-fuzzy-reordering-score {:4f} "
                 "test-elapsed {}".format(test_fscore, test_frs_score,
                                          format_elapsed(start_time)))
-    if args.result_path:
-        with open(args.result_path, 'w') as out_file:
-            result_dict = {
-            'recall': test_fscore.recall,
-                'precision': test_fscore.precision,
-                'fscore': test_fscore.fscore,
-                'fuzzy_reorder_score': test_frs_score
-            }
-            yaml.dump(result_dict, out_file)
+    print(f"Printing to this path {args.result_path}")
+    with open(args.result_path, 'w') as out_file:
+        result_dict = {
+        'recall': test_fscore.recall,
+            'precision': test_fscore.precision,
+            'fscore': test_fscore.fscore,
+            'fuzzy_reorder_score': test_frs_score
+        }
+        yaml.dump(result_dict, out_file)
 
 
 def main():
@@ -433,14 +439,14 @@ def main():
         subparser.add_argument(arg)
 
     subparser.add_argument("--no-prediction", action='store_true')
-    subparser.add_argument("--model-path-base", required=True)
+    subparser.add_argument("--model-path-base")
     subparser.add_argument("--evalb-dir", default="EVALB/")
     subparser.add_argument("--test-paths", default="data/23.auto.clean")
     subparser.add_argument("--test-langs", type=str)
     subparser.add_argument(
         "--tree-type", choices=["itg", "treebank"], required=True)
     subparser.add_argument("--language-embedding", type=str)
-    subparser.add_argument('--result-path', type=str, default=None)
+    subparser.add_argument('--result-path', type=str, required=True)
 
     args = parser.parse_args()
     args.callback(args)
