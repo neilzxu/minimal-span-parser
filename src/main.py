@@ -362,8 +362,15 @@ def run_test(args):
                 "test-fuzzy-reordering-score {:4f} "
                 "test-elapsed {}".format(test_fscore, test_frs_score,
                                          format_elapsed(start_time)))
-    print(f"Printing to this path {args.result_path}")
-    with open(args.result_path, 'w') as out_file:
+
+    logger.info(f"Printing to this path {args.result_prefix}.prediction")
+    with open(args.result_prefix + '.prediction', 'w') as out_file:
+        for prediction, truth ,in zip(test_predicted, test_treebank):
+            out_file.write(f"{prediction.linearize()}\n")
+            out_file.write(f"{truth.linearize()}\n")
+
+    logger.info(f"Printing to this path {args.result_prefix}.yaml")
+    with open(args.result_prefix + '.yaml', 'w') as out_file:
         result_dict = {
         'recall': test_fscore.recall,
             'precision': test_fscore.precision,
@@ -446,7 +453,7 @@ def main():
     subparser.add_argument(
         "--tree-type", choices=["itg", "treebank"], required=True)
     subparser.add_argument("--language-embedding", type=str)
-    subparser.add_argument('--result-path', type=str, required=True)
+    subparser.add_argument('--result-prefix', type=str, required=True)
 
     args = parser.parse_args()
     args.callback(args)
