@@ -19,6 +19,7 @@ class FScore(object):
         return "(Recall={:.2f}, Precision={:.2f}, FScore={:.2f})".format(
             self.recall, self.precision, self.fscore)
 
+
 def permute_from_tree(tree: TreebankNode) -> List[str]:
     if isinstance(tree, LeafTreebankNode):
         return [tree.word]

@@ -1,11 +1,15 @@
 import collections
 
+
 class Vocabulary(object):
-    def __init__(self):
+    def __init__(self, init_tokens=None):
         self.frozen = False
         self.values = []
         self.indices = {}
         self.counts = collections.defaultdict(int)
+        if init_tokens:
+            for token in init_tokens:
+                self.index(token)
 
     @property
     def size(self):

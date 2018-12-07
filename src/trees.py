@@ -40,6 +40,10 @@ class InternalTreebankNode(TreebankNode):
 
         return InternalParseNode(tuple(sublabels), children)
 
+    def __repr__(self):
+        children = ' '.join([child.__repr__() for child in self.children])
+        return f"({self.label} {children})"
+
 
 class LeafTreebankNode(TreebankNode):
     def __init__(self, tag, word):
@@ -57,6 +61,9 @@ class LeafTreebankNode(TreebankNode):
 
     def convert(self, index=0):
         return LeafParseNode(index, self.tag, self.word)
+
+    def __repr__(self):
+        return f"({self.tag} {self.word})"
 
 
 class ParseNode(object):
@@ -113,6 +120,10 @@ class InternalParseNode(ParseNode):
             if left < child.left < right
         ]
 
+    def __repr__(self):
+        return f'({self.label}' + ' '.join(
+            [child.__repr__() for child in self.children]) + ')'
+
 
 class LeafParseNode(ParseNode):
     def __init__(self, index, tag, word):
@@ -133,8 +144,11 @@ class LeafParseNode(ParseNode):
     def convert(self):
         return LeafTreebankNode(self.tag, self.word)
 
+    def __repr__(self):
+        return f"({self.tag} {self.word})"
 
-def load_itg_tree(sent, tree, idx):
+
+def load_itg_tree(sent, tree, idx=None):
     sent_tokens = sent.strip().split()
     ctx_stack = []
     ctx = []
@@ -154,14 +168,14 @@ def load_itg_tree(sent, tree, idx):
                     f"ITG idx ({idx}) invalid. expected: {len(sent_tokens)}, actual: [{start}-{end}]"
                 )
             ctx.extend([
-                LeafParseNode(idx, 'S', sent_tokens[idx])
+                LeafTreebankNode(idx, 'S', sent_tokens[idx])
                 for idx in range(start, end + 1)
             ])
         elif re.match(r'[0-9]+', token):
             ctx.append(
-                LeafParseNode(int(token), ('S'), sent_tokens[int(token)]))
+                LeafTreebankNode(int(token), ('S'), sent_tokens[int(token)]))
         elif token == ')':
-            tree = InternalParseNode((cur_label, ), ctx)
+            tree = InternalTreebankNode((cur_label, ), ctx)
             if ctx_stack:
                 cur_label, ctx = ctx_stack.pop()
                 ctx.append(tree)

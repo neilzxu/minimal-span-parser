@@ -14,5 +14,6 @@ models/*.meta
 
 # Python byte-compiled / optimized / DLL files
 __pycache__/
+.mypy_cache/
 *.py[cod]
 *$py.class

@@ -9,17 +9,19 @@ import time
 
 import dynet as dy
 import numpy as np
+import yaml
 
 import evaluate
+import loader
 import parse
 import trees
 import vocabulary
-import yaml
 
 LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
 logger = logging.getLogger('minimal-span-parser')
 logger.setLevel(LOGLEVEL)
 logger.addHandler(logging.StreamHandler(sys.stdout))
+
 
 
 def format_elapsed(start_time):
@@ -32,35 +34,42 @@ def format_elapsed(start_time):
         elapsed_string = "{}d{}".format(days, elapsed_string)
     return elapsed_string
 
-
-def load_language_embeddings(lang_file) -> Dict[str, np.ndarray]:
-    arr = np.load(lang_file)
-    langs = arr['langs']
-    features = arr['data']
-
-    result = {
-        langs[i][:2]: features[i].reshape((-1))
-        for i in range(langs.shape[0])
-    }
-    return result
-
-
-def load_files_and_langs(langs, paths, load_trees):
-    paths = paths.split(',')
-    if langs:
-        langs = langs.split(',')
-
-        assert len(langs) == len(paths)
-        lang_labels = []
-        tot_trees = []
-        for lang, path in [(lang, path) for lang, path in zip(langs, paths) if lang and path]:
-            trees = load_trees(path)
-            tree_langs = [lang for i in range(len(trees))]
-            tot_trees.extend(trees)
-            lang_labels.extend(tree_langs)
-        return (lang_labels, tot_trees)
+def build_parser(args,
+            model,
+            tag_vocab,
+            word_vocab,
+            label_vocab,
+            language_embeddings):
+    if args.parser_type == "top-down":
+        return parse.TopDownParser(
+            model,
+            tag_vocab,
+            word_vocab,
+            label_vocab,
+            args.tag_embedding_dim,
+            args.word_embedding_dim,
+            args.lstm_layers,
+            args.lstm_dim,
+            args.label_hidden_dim,
+            args.split_hidden_dim,
+            args.dropout,
+            language_embeddings,
+        )
     else:
-        return (None, [tree for path in paths for tree in load_trees(path)])
+        return parse.ChartParser(
+            model,
+            tag_vocab,
+            word_vocab,
+            label_vocab,
+            args.tag_embedding_dim,
+            args.word_embedding_dim,
+            args.lstm_layers,
+            args.lstm_dim,
+            args.label_hidden_dim,
+            args.dropout,
+            language_embeddings,
+        )
+
 
 
 def run_train(args):
@@ -71,42 +80,23 @@ def run_train(args):
             args.numpy_seed))
         np.random.seed(args.numpy_seed)
 
-    load_trees = trees.load_itg_trees if args.tree_type == 'itg' else trees.load_trees
-
+    loader = loader.Loader(args)
     if args.language_embedding:
         language_embeddings = load_language_embeddings(args.language_embedding)
     else:
         language_embeddings = None
 
-    train_langs, train_treebank = load_files_and_langs(
-        args.train_langs, args.train_paths, load_trees)
+    train_langs, train_treebank = loader.load_treebank(args.train_langs.split(',') if args.train_langs else None, args.train_paths.split(','))
     logger.info("Loaded {} training examples.".format(len(train_treebank)))
 
-    dev_langs, dev_treebank = load_files_and_langs(args.dev_langs,
-                                                   args.dev_paths, load_trees)
-
-    if args.tree_type != 'treebank':
-        dev_treebank = [tree.convert() for tree in dev_treebank]
+    dev_langs, dev_treebank = loader.load_treebank(args.dev_langs.split(',') if args.dev_langs else None,
+            args.dev_paths.split(',')
     logger.info("Loaded {:,} development examples.".format(len(dev_treebank)))
 
-    logger.info("Processing trees for training...")
-    if args.tree_type == 'treebank':
-        train_parse = [tree.convert() for tree in train_treebank]
-    else:
-        train_parse = train_treebank
     logger.info("Constructing vocabularies...")
-
-    tag_vocab = vocabulary.Vocabulary()
-    tag_vocab.index(parse.START)
-    tag_vocab.index(parse.STOP)
-
-    word_vocab = vocabulary.Vocabulary()
-    word_vocab.index(parse.START)
-    word_vocab.index(parse.STOP)
-    word_vocab.index(parse.UNK)
-
-    label_vocab = vocabulary.Vocabulary()
-    label_vocab.index(())
+    tag_vocab = vocabulary.Vocabulary([parse.START, parse.STOP])
+    word_vocab = vocabulary.Vocabulary([parse.START, parse.STOP, parse.UNK])
+    label_vocab = vocabulary.Vocabulary([()])
 
     for tree in train_parse:
         nodes = [tree]
@@ -125,7 +115,7 @@ def run_train(args):
 
     def print_vocabulary(name, vocab):
         special = {parse.START, parse.STOP, parse.UNK}
-        logger.info("{} ({:,}): {}".format(
+        logger.debug("{} ({:,}): {}".format(
             name, vocab.size,
             sorted(value for value in vocab.values if value in special) +
             sorted(value for value in vocab.values if value not in special)))
@@ -137,35 +127,7 @@ def run_train(args):
 
     logger.info("Initializing model...")
     model = dy.ParameterCollection()
-    if args.parser_type == "top-down":
-        parser = parse.TopDownParser(
-            model,
-            tag_vocab,
-            word_vocab,
-            label_vocab,
-            args.tag_embedding_dim,
-            args.word_embedding_dim,
-            args.lstm_layers,
-            args.lstm_dim,
-            args.label_hidden_dim,
-            args.split_hidden_dim,
-            args.dropout,
-            language_embeddings,
-        )
-    else:
-        parser = parse.ChartParser(
-            model,
-            tag_vocab,
-            word_vocab,
-            label_vocab,
-            args.tag_embedding_dim,
-            args.word_embedding_dim,
-            args.lstm_layers,
-            args.lstm_dim,
-            args.label_hidden_dim,
-            args.dropout,
-            language_embeddings,
-        )
+    parser = build_parser(args, model, tag_vocab, word_vocab, label_vocab, language_embeddings)
     trainer = dy.AdamTrainer(model)
 
     total_processed = 0
@@ -247,7 +209,9 @@ def run_train(args):
                 min(args.train_limit, len(train_parse))
                 if args.train_limit else len(train_parse), args.batch_size):
             dy.renew_cg()
+
             batch_losses = []
+
             if language_embeddings:
                 for lang, tree in zip(
                         train_langs[start_index:start_index + args.batch_size],
