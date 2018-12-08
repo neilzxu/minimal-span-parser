@@ -41,7 +41,10 @@ class InternalTreebankNode(TreebankNode):
         return InternalParseNode(tuple(sublabels), children)
 
     def __repr__(self):
-        children = ' '.join([child.__repr__() for child in self.children])
+        if all(isinstance(child, LeafTreebankNode) for child in self.children):
+            children = ' '.join([child.word for child in self.children])
+        else:
+            children = ' '.join([child.__repr__() for child in self.children])
         return f"({self.label} {children})"
 
 
@@ -121,8 +124,11 @@ class InternalParseNode(ParseNode):
         ]
 
     def __repr__(self):
-        return f'({self.label}' + ' '.join(
-            [child.__repr__() for child in self.children]) + ')'
+        if all(isinstance(child, LeafParseNode) for child in self.children):
+            children = ' '.join([child.word for child in self.children])
+        else:
+            children = ' '.join([child.__repr__() for child in self.children])
+        return f"({self.label} {children})"
 
 
 class LeafParseNode(ParseNode):
@@ -168,14 +174,13 @@ def load_itg_tree(sent, tree, idx=None):
                     f"ITG idx ({idx}) invalid. expected: {len(sent_tokens)}, actual: [{start}-{end}]"
                 )
             ctx.extend([
-                LeafTreebankNode(idx, 'S', sent_tokens[idx])
+                LeafTreebankNode('S', sent_tokens[idx])
                 for idx in range(start, end + 1)
             ])
         elif re.match(r'[0-9]+', token):
-            ctx.append(
-                LeafTreebankNode(int(token), ('S'), sent_tokens[int(token)]))
+            ctx.append(LeafTreebankNode('S', sent_tokens[int(token)]))
         elif token == ')':
-            tree = InternalTreebankNode((cur_label, ), ctx)
+            tree = InternalTreebankNode(cur_label, ctx)
             if ctx_stack:
                 cur_label, ctx = ctx_stack.pop()
                 ctx.append(tree)

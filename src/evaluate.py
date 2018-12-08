@@ -1,4 +1,5 @@
 from typing import List
+from collections import Counter
 from itertools import groupby, product
 import math
 import os.path
@@ -41,30 +42,38 @@ def permute_from_tree(tree: TreebankNode) -> List[str]:
 Framework for Machine Translation Reordering" (Talbot 2011)'''
 
 
+def fuzzy_reordering_score(perm_ref, perm_sys):
+    print(perm_ref)
+    print(perm_sys)
+    assert (Counter(perm_ref) == Counter(perm_sys))
+    words = set(perm_sys)
+    alignments = []
+    for word in words:
+        ref_indices = sorted(
+            [idx for (idx, token) in enumerate(perm_ref) if token == word])
+        sys_indices = sorted(
+            [idx for (idx, token) in enumerate(perm_sys) if token == word])
+        alignments.extend(list(zip(sys_indices, ref_indices)))
+    chunk_indices = [ref_index for _, ref_index in sorted(alignments)]
+
+    chunk_ct = 1 + len([
+        idx for idx in range(len(chunk_indices) - 1)
+        if chunk_indices[idx + 1] - chunk_indices[idx] != 1
+    ])
+
+    return 1 - (chunk_ct - 1) / (len(perm_ref))
+
+
 def calc_frs(gold_trees: List[TreebankNode],
              predicted_trees: List[TreebankNode]) -> float:
     result = []
-    total_len = 0
     for gold_tree, predicted_tree in zip(gold_trees, predicted_trees):
         gold_perm = ' '.join(permute_from_tree(gold_tree))
         if len(gold_perm) > 1:
-            predicted_perm = permute_from_tree(predicted_tree)
-            idx_mismatches = 0
-            # Compare each word w/ prev_word to see if it's offset by 1
-            start_idx = 0
-            for idx in range(2, len(predicted_perm)):
-                if not re.match(
-                        re.escape(' '.join(predicted_perm[start_idx:idx])),
-                        gold_perm):
-                    start_idx = idx - 1
-                    idx_mismatches += 1
+            predicted_perm = ' '.join(permute_from_tree(predicted_tree))
+            result.append(fuzzy_reordering_score(gold_perm, predicted_perm))
 
-            # Explicit formulation for score
-            score = 1 - idx_mismatches / (len(gold_perm) - 1)
-
-            result.append((len(gold_perm) - 1) * score)
-            total_len += len(gold_perm) - 1
-    return sum(result) / total_len
+    return sum(result) / len(result)
 
 
 def evalb(evalb_dir, gold_trees, predicted_trees):

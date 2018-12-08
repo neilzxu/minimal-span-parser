@@ -23,7 +23,6 @@ logger.setLevel(LOGLEVEL)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
-
 def format_elapsed(start_time):
     elapsed_time = int(time.time() - start_time)
     minutes, seconds = divmod(elapsed_time, 60)
@@ -34,12 +33,9 @@ def format_elapsed(start_time):
         elapsed_string = "{}d{}".format(days, elapsed_string)
     return elapsed_string
 
-def build_parser(args,
-            model,
-            tag_vocab,
-            word_vocab,
-            label_vocab,
-            language_embeddings):
+
+def build_parser(args, model, tag_vocab, word_vocab, label_vocab,
+                 language_embeddings):
     if args.parser_type == "top-down":
         return parse.TopDownParser(
             model,
@@ -71,7 +67,6 @@ def build_parser(args,
         )
 
 
-
 def run_train(args):
     logger.addHandler(logging.FileHandler(f"{args.model_path_base}.log"))
     logger.info(args)
@@ -80,25 +75,28 @@ def run_train(args):
             args.numpy_seed))
         np.random.seed(args.numpy_seed)
 
-    loader = loader.Loader(args)
+    data_loader = loader.Loader(args)
     if args.language_embedding:
         language_embeddings = load_language_embeddings(args.language_embedding)
     else:
         language_embeddings = None
 
-    train_langs, train_treebank = loader.load_treebank(args.train_langs.split(',') if args.train_langs else None, args.train_paths.split(','))
+    train_langs, train_treebank = data_loader.load_parse(
+        args.train_langs.split(',') if args.train_langs else None,
+        args.train_paths.split(','))
     logger.info("Loaded {} training examples.".format(len(train_treebank)))
 
-    dev_langs, dev_treebank = loader.load_treebank(args.dev_langs.split(',') if args.dev_langs else None,
-            args.dev_paths.split(',')
-    logger.info("Loaded {:,} development examples.".format(len(dev_treebank)))
+    dev_langs, dev_treebank = data_loader.load_treebank(
+        args.dev_langs.split(',') if args.dev_langs else None,
+        args.dev_paths.split(','))
+    logger.info("Loaded {} development examples.".format(len(dev_treebank)))
 
     logger.info("Constructing vocabularies...")
     tag_vocab = vocabulary.Vocabulary([parse.START, parse.STOP])
     word_vocab = vocabulary.Vocabulary([parse.START, parse.STOP, parse.UNK])
     label_vocab = vocabulary.Vocabulary([()])
 
-    for tree in train_parse:
+    for tree in train_treebank:
         nodes = [tree]
         while nodes:
             node = nodes.pop()
@@ -127,7 +125,8 @@ def run_train(args):
 
     logger.info("Initializing model...")
     model = dy.ParameterCollection()
-    parser = build_parser(args, model, tag_vocab, word_vocab, label_vocab, language_embeddings)
+    parser = build_parser(args, model, tag_vocab, word_vocab, label_vocab,
+                          language_embeddings)
     trainer = dy.AdamTrainer(model)
 
     total_processed = 0
@@ -149,38 +148,45 @@ def run_train(args):
         dev_predicted = []
 
         if args.dev_limit:
-            dev_sample = np.random.choice(dev_treebank, args.dev_limit, replace=False)
+            dev_sample = np.random.choice(
+                dev_treebank, args.dev_limit, replace=False)
         else:
             dev_sample = dev_treebank
 
+        dev_losses = []
         if language_embeddings:
             for lang, tree in zip(dev_langs, dev_sample):
                 dy.renew_cg()
                 sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
-                predicted, _ = parser.parse(sentence, lang=lang)
+                predicted, loss = parser.parse(sentence, lang=lang)
                 dev_predicted.append(predicted.convert())
+                dev_losses.append(loss)
         else:
             for tree in dev_sample:
                 dy.renew_cg()
                 sentence = [(leaf.tag, leaf.word) for leaf in tree.leaves()]
-                predicted, _ = parser.parse(sentence)
+                predicted, loss = parser.parse(sentence)
                 dev_predicted.append(predicted.convert())
+                dev_losses.append(loss)
 
-        dev_fscore = evaluate.evalb(args.evalb_dir, dev_sample,
-                                    dev_predicted)
+        dev_loss = dy.average(dev_losses)
+        dev_loss_value = dev_loss.scalar_value()
+        dev_fscore = evaluate.evalb(args.evalb_dir, dev_sample, dev_predicted)
 
         dev_frs_score = evaluate.calc_frs(dev_sample, dev_predicted)
-        logger.info("dev-fscore {} "
+        logger.info("dev-loss {}"
+                    "dev-fscore {} "
                     "dev-fuzzy reordering score {:4f} "
                     "dev-elapsed {} "
                     "total-elapsed {}".format(
+                        dev_loss_value,
                         dev_fscore,
                         dev_frs_score,
                         format_elapsed(dev_start_time),
                         format_elapsed(start_time),
                     ))
 
-        if dev_fscore.fscore > best_dev_fscore:
+        if dev_fscore.fscore >= best_dev_fscore:
             if best_dev_model_path is not None:
                 for ext in [".data", ".meta"]:
                     path = best_dev_model_path + ext
@@ -201,13 +207,13 @@ def run_train(args):
         if args.epochs is not None and epoch > args.epochs:
             break
 
-        np.random.shuffle(train_parse)
+        np.random.shuffle(train_treebank)
         epoch_start_time = time.time()
 
         for start_index in range(
                 0,
-                min(args.train_limit, len(train_parse))
-                if args.train_limit else len(train_parse), args.batch_size):
+                min(args.train_limit, len(train_treebank))
+                if args.train_limit else len(train_treebank), args.batch_size):
             dy.renew_cg()
 
             batch_losses = []
@@ -215,8 +221,8 @@ def run_train(args):
             if language_embeddings:
                 for lang, tree in zip(
                         train_langs[start_index:start_index + args.batch_size],
-                        train_parse[start_index:start_index +
-                                    args.batch_size]):
+                        train_treebank[start_index:start_index +
+                                       args.batch_size]):
                     sentence = [(leaf.tag, leaf.word)
                                 for leaf in tree.leaves()]
                     if args.parser_type == "top-down":
@@ -228,8 +234,8 @@ def run_train(args):
                     total_processed += 1
                     current_processed += 1
             else:
-                for tree in train_parse[start_index:start_index +
-                                        args.batch_size]:
+                for tree in train_treebank[start_index:start_index +
+                                           args.batch_size]:
                     sentence = [(leaf.tag, leaf.word)
                                 for leaf in tree.leaves()]
                     if args.parser_type == "top-down":
@@ -246,20 +252,21 @@ def run_train(args):
             batch_loss.backward()
             trainer.update()
 
-            logger.info("epoch {:,} "
-                        "batch {:,}/{:,} "
-                        "processed {:,} "
-                        "batch-loss {:.4f} "
-                        "epoch-elapsed {} "
-                        "total-elapsed {}".format(
-                            epoch,
-                            start_index // args.batch_size + 1,
-                            int(np.ceil(len(train_parse) / args.batch_size)),
-                            total_processed,
-                            batch_loss_value,
-                            format_elapsed(epoch_start_time),
-                            format_elapsed(start_time),
-                        ))
+            logger.info(
+                "epoch {:,} "
+                "batch {:,}/{:,} "
+                "processed {:,} "
+                "batch-loss {:.4f} "
+                "epoch-elapsed {} "
+                "total-elapsed {}".format(
+                    epoch,
+                    start_index // args.batch_size + 1,
+                    int(np.ceil(len(train_treebank) / args.batch_size)),
+                    total_processed,
+                    batch_loss_value,
+                    format_elapsed(epoch_start_time),
+                    format_elapsed(start_time),
+                ))
 
             if current_processed >= check_every:
                 current_processed -= check_every
@@ -273,21 +280,23 @@ def run_train(args):
             )
             break
 
+
 def run_test(args):
     logger.info("Loading test trees from {}...".format(args.test_paths))
 
-    test_langs, test_treebank = load_files_and_langs(
-        args.test_langs, args.test_paths, trees.load_trees
-        if args.tree_type == 'treebank' else trees.load_itg_trees)
-    if args.tree_type != 'treebank':
-        test_treebank = [tree.convert() for tree in test_treebank]
-
+    data_loader = loader.Loader(args)
+    test_langs, test_treebank = data_loader.load_treebank(
+        args.test_langs.split(',') if args.test_langs else None,
+        args.test_paths.split(','))
     logger.info("Loaded {:,} test examples.".format(len(test_treebank)))
 
     test_predicted = []
     if args.no_prediction:
         for tree in test_treebank:
-            children = [trees.LeafTreebankNode(leaf.tag, leaf.word) for leaf in tree.leaves()]
+            children = [
+                trees.LeafTreebankNode(leaf.tag, leaf.word)
+                for leaf in tree.leaves()
+            ]
             test_predicted.append(trees.InternalTreebankNode('S', children))
         start_time = time.time()
     else:
@@ -305,7 +314,6 @@ def run_test(args):
         logger.info("Parsing test sentences...")
 
         start_time = time.time()
-
 
         if test_langs and args.language_embedding:
             for lang, tree in zip(test_langs, test_treebank):
@@ -329,14 +337,14 @@ def run_test(args):
 
     logger.info(f"Printing to this path {args.result_prefix}.prediction")
     with open(args.result_prefix + '.prediction', 'w') as out_file:
-        for prediction, truth ,in zip(test_predicted, test_treebank):
-            out_file.write(f"{prediction.linearize()}\n")
-            out_file.write(f"{truth.linearize()}\n")
+        for prediction, truth, in zip(test_predicted, test_treebank):
+            out_file.write(f"{str(prediction)}\n")
+            out_file.write(f"{str(truth)}\n")
 
     logger.info(f"Printing to this path {args.result_prefix}.yaml")
     with open(args.result_prefix + '.yaml', 'w') as out_file:
         result_dict = {
-        'recall': test_fscore.recall,
+            'recall': test_fscore.recall,
             'precision': test_fscore.precision,
             'fscore': test_fscore.fscore,
             'fuzzy_reorder_score': test_frs_score
@@ -401,7 +409,6 @@ def main():
     subparser.add_argument("--print-vocabs", action="store_true")
     subparser.add_argument(
         "--tree-type", choices=["itg", "treebank"], required=True)
-
 
     subparser = subparsers.add_parser("test")
     subparser.set_defaults(callback=run_test)

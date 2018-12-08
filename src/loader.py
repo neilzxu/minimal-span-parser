@@ -44,3 +44,7 @@ class Loader:
             return (None, [
                 tree for path in path_list for tree in self.load_trees(path)
             ])
+
+    def load_parse(self, lang_list, path_list):
+        langs, trees = self.load_treebank(lang_list, path_list)
+        return langs, [tree.convert() for tree in trees]
